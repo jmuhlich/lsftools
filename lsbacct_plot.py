@@ -58,7 +58,7 @@ class Record:
         return str(self.data)
 
     def format_long(self):
-        return '\n'.join('%-20s: %s' % (f.name, self[f.name]) for f in self.format.fields)
+        return '\n'.join('%-20s (%%%1s) : %s' % (f.name, f.format, self[f.name]) for f in self.format.fields)
     
 lsbacct_format = {
     'JOB_FINISH': [
@@ -127,18 +127,24 @@ lsbacct_format = {
         'exceptMask=i',
         'additionalInfo=s',
         'exitInfo=i',
-        'warningTimePeriod=i',
+        # warningTimePeriod and warningAction appear to be reversed in the lsb.acct docs (fixed here)
+        ###'warningTimePeriod=i',
+        ###'warningAction=s',
         'warningAction=s',
+        'warningTimePeriod=i',
         'chargedSAAP=s',
         'licenseProject=s',
-        'options3=i',
+        # this column never appears in files i've observed
+        ###'options3=i',
         'app=s',
         'postExecCmd=s',
         'runtimeEstimation=i',
         'jobGroupName=s',
+        'autoRequeueCodes=s',
+        'unknown_1=i',
         'resizeNotifyCmd=s',
         'lastResizeTime=i',
-        'rsvId=s',
+        'rsvId_alternate=s',
         'jobDescription=s',
         ]
     }
@@ -153,7 +159,7 @@ if len(sys.argv) >= 2:
     input_file = open(sys.argv[1])
 else:
     input_file = sys.stdin
-reader = csv.reader(input_file, delimiter=' ', doublequote=True)
+reader = csv.reader(input_file, delimiter=' ', doublequote=True, skipinitialspace=True)
 
 for row_list in reader:
     row = deque(row_list)
