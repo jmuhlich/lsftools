@@ -1,10 +1,5 @@
-#!/usr/bin/python
-
-import sys
-import rrdtool
 import csv
 import re
-import warnings
 from collections import deque
 
 class Field:
@@ -29,10 +24,33 @@ class Field:
     def __str__(self):
         return self.string_format
 
-class FieldFormatMismatchError(RuntimeError):
+class FormatError(RuntimeError):
+    msg = ''
+    def __init__(self, msg):
+        self.msg = msg
+        RuntimeError.__init__(self, msg)
+
+class FieldFormatError(FormatError):
     def __init__(self, field, value):
-        message = "value '%s' is not a valid value for field '%s' " % (value, field)
-        RuntimeError.__init__(self, message)
+        message = "'%s' is not a valid value for field '%s' " % (value, field)
+        FormatError.__init__(self, message)
+
+class RecordFormatError(FormatError):
+    def __init__(self, row_num, msg):
+        # report 1-based row numbers
+        message = "error at line %d: %s" % (row_num + 1, msg)
+        FormatError.__init__(self, message)
+
+class UnkownEventTypeError(FormatError):
+    def __init__(self, event_type):
+        message = "unknown event type '%s'" % event_type
+        FormatError.__init__(self, message)
+
+class NotEnoughValuesError(FormatError):
+    def __init__(self, event_type, version):
+        message = "not enough values for event '%s' version '%s'" % (event_type, version)
+        FormatError.__init__(self, message)
+
 
 class Format:
     fields = []
@@ -71,7 +89,7 @@ class Record:
             elif format == 's':
                 pass
         except ValueError:
-            raise FieldFormatMismatchError(field, value)
+            raise FieldFormatError(field, value)
         self.data[field.index] = value
 
     def __getitem__(self, i):
@@ -188,34 +206,36 @@ for name, fields in formats.items():
         fields[j] = Field(field_string, j)
     formats[name] = Format(fields)
 
-if len(sys.argv) >= 2:
-    input_file = open(sys.argv[1])
-else:
-    input_file = sys.stdin
-reader = csv.reader(input_file, delimiter=' ', doublequote=True, skipinitialspace=True)
 
-for row_num, row_list in enumerate(reader):
-    row = deque(row_list)
-    event_type = row_list[0]
-    if event_type not in formats:
-        print "Don't know how to parse event type '%s'" % event_type
-        exit()
-    record = Record(formats[event_type])
-    for field in record.format.fields:
+class LogfileReader(object):
+    csv_reader = None
+
+    def __init__(self, input_file):
+        self.csv_reader = csv.reader(input_file, delimiter=' ', doublequote=True, skipinitialspace=True)
+        self.enum_reader = enumerate(self.csv_reader)
+
+    def __iter__(self):
+        return self
+
+    def next(self):
+        (row_num, row_list) = self.enum_reader.next()
+        row = deque(row_list)
+        event_type = row_list[0]
         try:
-            if field.multi:
-                record[field.name] = [row.popleft() for i in range(int(record[record.format.fields[field.index-1].name]))]
-            else:
-                record[field.name] = row.popleft()
-        except FieldFormatMismatchError as e:
-            print "Data type mismatch at line %d: %s" % (row_num + 1, e)
-            exit()
-        if len(row) == 0:
-            version = record['versionNumber']
-            if format_last_field[event_type][version] == field.name:
-                break
-            else:
-                print "Line does not contain enough values for event '%s' version '%s'" % (event_type, version)
-                exit()
-
-    print row_num, record['userName']
+            if event_type not in formats:
+                raise UnknownEventTypeError(event_type)
+            record = Record(formats[event_type])
+            for field in record.format.fields:
+                if field.multi:
+                    record[field.name] = [row.popleft() for i in range(int(record[record.format.fields[field.index-1].name]))]
+                else:
+                    record[field.name] = row.popleft()
+                # seems there is always a dummy "0" as the last value, so len==1 means we're done
+                if len(row) == 1:
+                    version = record['versionNumber']
+                    if format_last_field[event_type][version] == field.name:
+                        return record
+                    else:
+                        raise NotEnoughValuesError(event_type, version)
+        except FormatError as e:
+            raise RecordFormatError(row_num, e.msg)
