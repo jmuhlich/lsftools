@@ -24,7 +24,15 @@ class Field:
             self.multi = True
 
     def __repr__(self):
-        return '%s(%s)' % (self.__class__.__name__, self.string_format)
+        return '%s(%s)' % (self.__class__.__name__, self)
+
+    def __str__(self):
+        return self.string_format
+
+class FieldFormatMismatchError(RuntimeError):
+    def __init__(self, field, value):
+        message = "value '%s' is not a valid value for field '%s' " % (value, field)
+        RuntimeError.__init__(self, message)
 
 class Format:
     fields = []
@@ -34,6 +42,8 @@ class Format:
         self.fields = fields
         self.index = dict((v, i) for i, v in enumerate([f.name for f in fields]))
 
+RE_INT = re.compile('-?[0-9]+')
+
 class Record:
     format = None
     data = None
@@ -42,25 +52,39 @@ class Record:
         self.format = format
         self.data = [None] * len(format.fields)
 
+    def _get_field_by_name(self, field_name):
+        if field_name not in self.format.index:
+            raise KeyError(field_name)
+        field_index = self.format.index[field_name]
+        if field_index >= len(self.data):
+            raise IndexError('%s (%d)' % (field_name, field_index))
+        return self.format.fields[field_index]
+
     def __setitem__(self, i, value):
-        assert(i in self.format.index)
-        index = self.format.index[i]
-        assert(index < len(self.data))
-        self.data[index] = value
+        field = self._get_field_by_name(i)
+        format = field.format
+        try:
+            if format == 'i':
+                value = int(value)
+            elif format == 'f':
+                value = float(value)
+            elif format == 's':
+                pass
+        except ValueError:
+            raise FieldFormatMismatchError(field, value)
+        self.data[field.index] = value
 
     def __getitem__(self, i):
-        assert(i in self.format.index)
-        index = self.format.index[i]
-        assert(index < len(self.data))
-        return self.data[index]
+        field = self._get_field_by_name(i)
+        return self.data[field.index]
 
     def __str__(self):
         return str(self.data)
 
     def format_long(self):
-        return '\n'.join('%-20s (%%%1s) : %s' % (f.name, f.format, self[f.name]) for f in self.format.fields)
+        return '\n'.join('%s (%%%s) : %s' % (f.name, f.format, self[f.name]) for f in self.format.fields)
     
-lsbacct_format = {
+formats = {
     'JOB_FINISH': [
         'eventType=s',
         'versionNumber=s',
@@ -149,11 +173,20 @@ lsbacct_format = {
         ]
     }
 
+# last defined field name by LSF version for each format
+format_last_field = {
+    'JOB_FINISH': {
+        '6.0' : 'chargedSAAP',
+        '7.06': 'jobDescription',
+        }
+    }
+
+
 # prepare formats by turning them into Field objects
-for name, fields in lsbacct_format.items():
+for name, fields in formats.items():
     for j, field_string in enumerate(fields):
         fields[j] = Field(field_string, j)
-    lsbacct_format[name] = Format(fields)
+    formats[name] = Format(fields)
 
 if len(sys.argv) >= 2:
     input_file = open(sys.argv[1])
@@ -161,13 +194,28 @@ else:
     input_file = sys.stdin
 reader = csv.reader(input_file, delimiter=' ', doublequote=True, skipinitialspace=True)
 
-for row_list in reader:
+for row_num, row_list in enumerate(reader):
     row = deque(row_list)
     event_type = row_list[0]
-    record = Record(lsbacct_format[event_type])
+    if event_type not in formats:
+        print "Don't know how to parse event type '%s'" % event_type
+        exit()
+    record = Record(formats[event_type])
     for field in record.format.fields:
-        if field.multi:
-            record[field.name] = [row.popleft() for i in range(int(record[record.format.fields[field.index-1].name]))]
-        else:
-            record[field.name] = row.popleft()
-    print record.format_long()
+        try:
+            if field.multi:
+                record[field.name] = [row.popleft() for i in range(int(record[record.format.fields[field.index-1].name]))]
+            else:
+                record[field.name] = row.popleft()
+        except FieldFormatMismatchError as e:
+            print "Data type mismatch at line %d: %s" % (row_num + 1, e)
+            exit()
+        if len(row) == 0:
+            version = record['versionNumber']
+            if format_last_field[event_type][version] == field.name:
+                break
+            else:
+                print "Line does not contain enough values for event '%s' version '%s'" % (event_type, version)
+                exit()
+
+    print row_num, record['userName']
